@@ -2,6 +2,7 @@ use crate::metastore::table::{Table, TablePath};
 use crate::metastore::{Chunk, IdRow, Index, Partition};
 use crate::queryplanner::panic::PanicWorkerNode;
 use crate::queryplanner::planning::{ClusterSendNode, PlanningMeta, Snapshots};
+use crate::queryplanner::providers::InfoSchemaQueryCacheTableProvider;
 use crate::queryplanner::query_executor::{CubeTable, InlineTableId, InlineTableProvider};
 use crate::queryplanner::topk::{ClusterAggregateTopK, SortColumn};
 use crate::queryplanner::udfs::aggregate_udf_by_kind;
@@ -12,8 +13,8 @@ use crate::queryplanner::udfs::{
 use crate::queryplanner::InfoSchemaTableProvider;
 use crate::table::Row;
 use crate::CubeError;
-use arrow::datatypes::DataType;
-use arrow::record_batch::RecordBatch;
+use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::cube_ext::alias::LogicalAlias;
 use datafusion::cube_ext::join::SkewedLeftCrossJoin;
 use datafusion::cube_ext::joinagg::CrossJoinAgg;
@@ -75,6 +76,7 @@ pub struct SerializedPlan {
     schema_snapshot: Arc<SchemaSnapshot>,
     partition_ids_to_execute: Vec<(u64, RowFilter)>,
     inline_table_ids_to_execute: Vec<InlineTableId>,
+    trace_obj: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -592,10 +594,17 @@ impl SerializedLogicalPlan {
                     })
                     .collect::<Vec<_>>();
 
-                SerializedLogicalPlan::Union {
-                    inputs,
-                    schema: schema.clone(),
-                    alias: alias.clone(),
+                if inputs.is_empty() {
+                    SerializedLogicalPlan::EmptyRelation {
+                        produce_one_row: false,
+                        schema: schema.clone(),
+                    }
+                } else {
+                    SerializedLogicalPlan::Union {
+                        inputs,
+                        schema: schema.clone(),
+                        alias: alias.clone(),
+                    }
                 }
             }
             SerializedLogicalPlan::TableScan {
@@ -1034,6 +1043,7 @@ impl SerializedPlan {
     pub async fn try_new(
         plan: LogicalPlan,
         index_snapshots: PlanningMeta,
+        trace_obj: Option<String>,
     ) -> Result<Self, CubeError> {
         let serialized_logical_plan = Self::serialized_logical_plan(&plan);
         Ok(SerializedPlan {
@@ -1041,6 +1051,7 @@ impl SerializedPlan {
             schema_snapshot: Arc::new(SchemaSnapshot { index_snapshots }),
             partition_ids_to_execute: Vec::new(),
             inline_table_ids_to_execute: Vec::new(),
+            trace_obj,
         })
     }
 
@@ -1057,6 +1068,7 @@ impl SerializedPlan {
             schema_snapshot: self.schema_snapshot.clone(),
             partition_ids_to_execute,
             inline_table_ids_to_execute,
+            trace_obj: self.trace_obj.clone(),
         }
     }
 
@@ -1073,6 +1085,10 @@ impl SerializedPlan {
             chunk_id_to_record_batches,
             parquet_metadata_cache,
         })
+    }
+
+    pub fn trace_obj(&self) -> Option<String> {
+        self.trace_obj.clone()
     }
 
     pub fn index_snapshots(&self) -> &Vec<IndexSnapshot> {
@@ -1193,6 +1209,10 @@ impl SerializedPlan {
                         .as_any()
                         .downcast_ref::<InfoSchemaTableProvider>()
                         .is_none()
+                        && source
+                            .as_any()
+                            .downcast_ref::<InfoSchemaQueryCacheTableProvider>()
+                            .is_none()
                     {
                         self.seen_data_scans = true;
                         return Ok(false);

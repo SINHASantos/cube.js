@@ -5,13 +5,11 @@ import { CubeStoreDriver } from '@cubejs-backend/cubestore-driver';
 
 import { QueryCache, QueryBody, TempTable } from './QueryCache';
 import { PreAggregations, PreAggregationDescription, getLastUpdatedAtTimestamp } from './PreAggregations';
-import { RedisPool, RedisPoolOptions } from './RedisPool';
 import { DriverFactory, DriverFactoryByDataSource } from './DriverFactory';
-import { RedisQueueEventsBus } from './RedisQueueEventsBus';
 import { LocalQueueEventsBus } from './LocalQueueEventsBus';
 import { QueryStream } from './QueryStream';
 
-export type CacheAndQueryDriverType = 'redis' | 'memory' | 'cubestore';
+export type CacheAndQueryDriverType = 'memory' | 'cubestore' | /** removed, used for exception */ 'redis';
 
 export enum DriverType {
   External = 'external',
@@ -22,15 +20,12 @@ export enum DriverType {
 export interface QueryOrchestratorOptions {
   externalDriverFactory?: DriverFactory;
   cacheAndQueueDriver?: CacheAndQueryDriverType;
-  redisPoolOptions?: RedisPoolOptions;
   queryCacheOptions?: any;
   preAggregationsOptions?: any;
   rollupOnlyMode?: boolean;
   continueWaitTimeout?: number;
   skipExternalCacheAndQueue?: boolean;
 }
-
-let redisDeprecationShowed = false;
 
 function detectQueueAndCacheDriver(options: QueryOrchestratorOptions): CacheAndQueryDriverType {
   if (options.cacheAndQueueDriver) {
@@ -54,17 +49,15 @@ function detectQueueAndCacheDriver(options: QueryOrchestratorOptions): CacheAndQ
 }
 
 export class QueryOrchestrator {
-  protected readonly queryCache: QueryCache;
+  protected queryCache: QueryCache;
 
   protected readonly preAggregations: PreAggregations;
 
-  protected readonly redisPool: RedisPool | undefined;
-
   protected readonly rollupOnlyMode: boolean;
 
-  private queueEventsBus: RedisQueueEventsBus | LocalQueueEventsBus;
+  private queueEventsBus: LocalQueueEventsBus;
 
-  private readonly cacheAndQueueDriver: string;
+  protected readonly cacheAndQueueDriver: string;
 
   public constructor(
     protected readonly redisPrefix: string,
@@ -75,26 +68,14 @@ export class QueryOrchestrator {
     this.rollupOnlyMode = options.rollupOnlyMode;
     const cacheAndQueueDriver = detectQueueAndCacheDriver(options);
 
-    if (!['redis', 'memory', 'cubestore'].includes(cacheAndQueueDriver)) {
+    if (!['memory', 'cubestore'].includes(cacheAndQueueDriver)) {
       throw new Error(
-        `Only 'cubestore', 'redis' or 'memory' are supported for cacheAndQueueDriver option, passed: ${cacheAndQueueDriver}`
+        `Only 'cubestore' or 'memory' are supported for cacheAndQueueDriver option, passed: ${cacheAndQueueDriver}`
       );
-    }
-
-    if (cacheAndQueueDriver === 'redis' && !redisDeprecationShowed) {
-      this.logger('Redis Deprecation', {
-        warning: (
-          'Redis queue and cache driver is deprecated and no longer supported. Please consider switching to cubestore option.'
-        )
-      });
-
-      redisDeprecationShowed = true;
     }
 
     const { externalDriverFactory, continueWaitTimeout, skipExternalCacheAndQueue } = options;
 
-    const redisPool = cacheAndQueueDriver === 'redis' ? new RedisPool(options.redisPoolOptions) : undefined;
-    this.redisPool = redisPool;
     this.cacheAndQueueDriver = cacheAndQueueDriver;
 
     const cubeStoreDriverFactory = cacheAndQueueDriver === 'cubestore' ? async () => {
@@ -117,7 +98,6 @@ export class QueryOrchestrator {
       {
         externalDriverFactory,
         cacheAndQueueDriver,
-        redisPool,
         cubeStoreDriverFactory,
         continueWaitTimeout,
         skipExternalCacheAndQueue,
@@ -132,7 +112,6 @@ export class QueryOrchestrator {
       {
         externalDriverFactory,
         cacheAndQueueDriver,
-        redisPool,
         cubeStoreDriverFactory,
         continueWaitTimeout,
         skipExternalCacheAndQueue,
@@ -146,11 +125,9 @@ export class QueryOrchestrator {
 
   private getQueueEventsBus() {
     if (!this.queueEventsBus) {
-      const isRedis = this.cacheAndQueueDriver === 'redis';
-      this.queueEventsBus = isRedis ?
-        new RedisQueueEventsBus({ redisPool: this.redisPool }) :
-        new LocalQueueEventsBus();
+      this.queueEventsBus = new LocalQueueEventsBus();
     }
+
     return this.queueEventsBus;
   }
 
@@ -172,7 +149,17 @@ export class QueryOrchestrator {
    * Force reconcile queue logic to be executed.
    */
   public async forceReconcile(datasource = 'default') {
-    await this.queryCache.forceReconcile(datasource);
+    // pre-aggregations queue reconcile
+    const preaggsQueue = await this.preAggregations.getQueue(datasource);
+    if (preaggsQueue) {
+      await preaggsQueue.reconcileQueue();
+    }
+
+    // queries queue reconcile
+    const queryQueue = await this.queryCache.getQueue(datasource);
+    if (queryQueue) {
+      await queryQueue.reconcileQueue();
+    }
   }
 
   /**
@@ -432,6 +419,7 @@ export class QueryOrchestrator {
     const { external } = preAggregation;
 
     const data = await this.fetchQuery({
+      dataSource: preAggregation.dataSource,
       continueWait: true,
       query,
       external,
@@ -470,9 +458,5 @@ export class QueryOrchestrator {
 
   public async updateRefreshEndReached() {
     return this.preAggregations.updateRefreshEndReached();
-  }
-
-  public async fetchSchema(dataSource: string) {
-    return this.queryCache.fetchSchema(dataSource);
   }
 }
