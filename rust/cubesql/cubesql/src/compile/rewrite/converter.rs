@@ -1551,14 +1551,13 @@ impl LanguageToLogicalPlanConverter {
                                 match_data_node!(node_by_id, measure_params[0], MeasureName);
                             let expr = self.to_expr(measure_params[1])?;
                             query_measures.push(measure.to_string());
-                            let data_type = self
-                                .cube_context
-                                .meta
-                                .find_df_data_type(measure.to_string())
-                                .ok_or(CubeError::internal(format!(
-                                    "Can't find measure '{}'",
-                                    measure
-                                )))?;
+                            let data_type =
+                                self.cube_context.meta.find_df_data_type(&measure).ok_or(
+                                    CubeError::internal(format!(
+                                        "Can't find measure '{}'",
+                                        measure
+                                    )),
+                                )?;
                             fields.push((
                                 DFField::new(
                                     expr_relation(&expr),
@@ -1608,14 +1607,13 @@ impl LanguageToLogicalPlanConverter {
                         LogicalPlanLanguage::Dimension(params) => {
                             let dimension = match_data_node!(node_by_id, params[0], DimensionName);
                             let expr = self.to_expr(params[1])?;
-                            let data_type = self
-                                .cube_context
-                                .meta
-                                .find_df_data_type(dimension.to_string())
-                                .ok_or(CubeError::internal(format!(
-                                    "Can't find dimension '{}'",
-                                    dimension
-                                )))?;
+                            let data_type =
+                                self.cube_context.meta.find_df_data_type(&dimension).ok_or(
+                                    CubeError::internal(format!(
+                                        "Can't find dimension '{}'",
+                                        dimension
+                                    )),
+                                )?;
                             query_dimensions.push(dimension.to_string());
                             fields.push((
                                 DFField::new(
@@ -1705,7 +1703,7 @@ impl LanguageToLogicalPlanConverter {
                                         if self
                                             .cube_context
                                             .meta
-                                            .is_synthetic_field(column.member_name().to_string())
+                                            .is_synthetic_field(column.member_name())
                                         {
                                             fields.push((
                                                 DFField::new(
@@ -1825,16 +1823,18 @@ impl LanguageToLogicalPlanConverter {
                                 let values =
                                     match_data_node!(node_by_id, params[2], FilterMemberValues);
                                 if !is_in_or && op == "inDateRange" {
-                                    let existing_time_dimension =
-                                        query_time_dimensions.iter_mut().find_map(|td| {
+                                    let existing_time_dimensions: Vec<_> = query_time_dimensions
+                                        .iter_mut()
+                                        .filter_map(|td| {
                                             if td.dimension == member && td.date_range.is_none() {
                                                 td.date_range = Some(json!(values));
                                                 Some(td)
                                             } else {
                                                 None
                                             }
-                                        });
-                                    if existing_time_dimension.is_none() {
+                                        })
+                                        .collect();
+                                    if existing_time_dimensions.len() == 0 {
                                         let dimension = V1LoadRequestQueryTimeDimension {
                                             dimension: member.to_string(),
                                             granularity: None,
