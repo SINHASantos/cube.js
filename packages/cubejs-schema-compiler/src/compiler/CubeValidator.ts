@@ -626,15 +626,26 @@ const MeasuresSchema = Joi.object().pattern(identifierRegex, Joi.alternatives().
   ]
 ));
 
-const CalendarTimeShiftItem = Joi.object({
-  name: identifier,
-  interval: regexTimeInterval,
-  type: Joi.string().valid('next', 'prior'),
-  sql: Joi.func().required(),
-})
-  .or('name', 'interval')
-  .with('interval', 'type')
-  .with('type', 'interval');
+const CalendarTimeShiftItem = Joi.alternatives().try(
+  Joi.object({
+    name: identifier.required(),
+    interval: regexTimeInterval.required(),
+    type: Joi.string().valid('next', 'prior').required(),
+    sql: Joi.forbidden()
+  }),
+  Joi.object({
+    name: identifier.required(),
+    sql: Joi.func().required(),
+    interval: Joi.forbidden(),
+    type: Joi.forbidden()
+  }),
+  Joi.object({
+    interval: regexTimeInterval.required(),
+    type: Joi.string().valid('next', 'prior').required(),
+    sql: Joi.func().required(),
+    name: Joi.forbidden()
+  })
+);
 
 const DimensionsSchema = Joi.object().pattern(identifierRegex, Joi.alternatives().try(
   inherit(BaseDimensionWithoutSubQuery, {
@@ -815,6 +826,19 @@ const cubeSchema = inherit(baseSchema, {
   'object.xor': 'You must use either sql or sqlTable within a model, but not both'
 });
 
+const folderSchema = Joi.object().keys({
+  name: Joi.string().required(),
+  includes: Joi.alternatives([
+    Joi.string().valid('*'),
+    Joi.array().items(
+      Joi.alternatives([
+        Joi.string().required(),
+        Joi.link('#folderSchema'), // Can contain nested folders
+      ]),
+    ),
+  ]).required(),
+}).id('folderSchema');
+
 const viewSchema = inherit(baseSchema, {
   isView: Joi.boolean().strict(),
   cubes: Joi.array().items(
@@ -842,13 +866,7 @@ const viewSchema = inherit(baseSchema, {
       'object.oxor': 'Using split together with prefix is not supported'
     })
   ),
-  folders: Joi.array().items(Joi.object().keys({
-    name: Joi.string().required(),
-    includes: Joi.alternatives([
-      Joi.string().valid('*'),
-      Joi.array().items(Joi.string().required())
-    ]).required(),
-  })),
+  folders: Joi.array().items(folderSchema),
 });
 
 function formatErrorMessageFromDetails(explain, d) {

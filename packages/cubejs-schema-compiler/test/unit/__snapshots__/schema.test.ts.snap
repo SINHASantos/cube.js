@@ -276,6 +276,11 @@ Object {
           "sql": [Function],
         },
         Object {
+          "interval": "1 year",
+          "name": "prev_year_named_common_interval",
+          "type": "prior",
+        },
+        Object {
           "interval": "2 year",
           "sql": [Function],
           "type": "prior",
@@ -2053,6 +2058,7 @@ Array [
       },
     ],
     "name": "folder1",
+    "type": "folder",
   },
   Object {
     "includes": Array [
@@ -2068,6 +2074,7 @@ Array [
       },
     ],
     "name": "folder2",
+    "type": "folder",
   },
 ]
 `;
